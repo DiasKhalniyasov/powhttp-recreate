@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.fuse_hidden*
+*.swp
+.idea/
+.vscode/
+
+# mitmproxy runtime state.
+# `captures/` and `compare/runs/agentbox_captures/` contain the GENERATED
+# CA private key (mitmproxy-ca.pem). NEVER commit these.
+captures/
+compare/runs/
+
+# HAR fixtures contain the original browser's cookies, ad IDs, user-agent,
+# and locale — personal data. Drop your own HAR into compare/fixtures/ and
+# run compare.sh locally. If you really mean to commit a sanitized HAR, use
+# `git add -f compare/fixtures/<name>.har`.
+compare/fixtures/*.har
+
+# Misc
+*.log

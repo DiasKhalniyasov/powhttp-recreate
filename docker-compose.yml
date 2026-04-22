@@ -1,0 +1,25 @@
+# Ephemeral-per-task invocation.
+#
+# Usage:
+#   TASK_URL=https://example.com docker compose run --rm agent
+#
+# Captures end up in ./captures/ on the host after the container exits.
+
+services:
+  agent:
+    build: .
+    image: powhttp-agent-box:latest
+    environment:
+      # Override at invocation time.
+      TASK_URL: "${TASK_URL:-https://httpbin.org/anything/hello}"
+    volumes:
+      # Flow database, blob bodies, root CA, mitmproxy log — all land here.
+      - ./captures:/state
+    # Ephemeral: one task, then exit.
+    restart: "no"
+    # Playwright/Chromium need a few extra knobs in containers.
+    shm_size: "2g"
+    cap_add:
+      - SYS_ADMIN   # Chromium sandbox; dropped at runtime by --no-sandbox anyway
+    security_opt:
+      - seccomp=unconfined
