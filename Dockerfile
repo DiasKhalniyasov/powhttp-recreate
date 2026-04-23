@@ -37,7 +37,10 @@ RUN pip install --no-cache-dir \
         "mitmproxy==11.0.2" \
         "playwright==1.50.0" \
         "mcp[cli]>=1.2.0" \
-        "jq>=1.6.0"
+        "jq>=1.6.0" \
+        "cryptography>=42.0" \
+        "dnspython[doh]>=2.6.0" \
+        "httpx[http2]>=0.27.0"
 
 # Playwright browsers are already baked into the base image — don't re-download.
 
@@ -48,6 +51,11 @@ COPY mitm_addon.py /app/mitm_addon.py
 COPY flows.py /app/flows.py
 COPY agent_example.py /app/agent_example.py
 COPY mcp_server.py /app/mcp_server.py
+COPY ids.py /app/ids.py
+COPY ja3.py /app/ja3.py
+COPY h2_tap.py /app/h2_tap.py
+COPY doh.py /app/doh.py
+COPY probe_capture.py /app/probe_capture.py
 
 RUN chmod +x /usr/local/bin/entrypoint.sh \
     && mkdir -p "$STATE_DIR"

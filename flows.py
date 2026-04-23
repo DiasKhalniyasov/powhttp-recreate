@@ -20,6 +20,7 @@ BODIES_DIR = Path(os.environ.get("POWHTTP_BODIES_DIR", "/state/bodies"))
 @dataclass
 class Entry:
     entry_id: str
+    session_id: str
     started_at: int
     method: str
     url: str
@@ -28,11 +29,16 @@ class Entry:
     http_version: str | None
     content_type: str | None
     cluster_id: str
+    tls_conn_id: str | None = None
+    h2_conn_id: str | None = None
+    h2_stream_id: int | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Entry":
+        keys = row.keys()
         return cls(
             entry_id=row["entry_id"],
+            session_id=row["session_id"] if "session_id" in keys else "",
             started_at=row["started_at"],
             method=row["method"],
             url=row["url"],
@@ -41,6 +47,9 @@ class Entry:
             http_version=row["http_version"],
             content_type=row["content_type"],
             cluster_id=row["cluster_id"],
+            tls_conn_id=row["tls_conn_id"] if "tls_conn_id" in keys else None,
+            h2_conn_id=row["h2_conn_id"] if "h2_conn_id" in keys else None,
+            h2_stream_id=row["h2_stream_id"] if "h2_stream_id" in keys else None,
         )
 
 
@@ -148,15 +157,124 @@ def fts_search(query: str, limit: int = 50) -> list[Entry]:
     return [Entry.from_row(r) for r in rows]
 
 
+def list_sessions(limit: int = 50) -> list[dict]:
+    """All recorded proxy-daemon runs, newest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def active_session() -> dict | None:
+    """Most recent session whose ended_at is NULL, or just the newest."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    with _connect() as conn:
+        entry_rows = conn.execute(
+            "SELECT entry_id FROM entries WHERE session_id=? ORDER BY started_at ASC",
+            (out["session_id"],),
+        ).fetchall()
+    out["entryIds"] = [r["entry_id"] for r in entry_rows]
+    return out
+
+
+def get_tls_connection(connection_id: str) -> dict | None:
+    """Full TLS handshake record, including JA3/JA4 and cert chain."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM tls_connections WHERE connection_id=?", (connection_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    if out.get("alpn_offered"):
+        try:
+            out["alpn_offered"] = json.loads(out["alpn_offered"])
+        except Exception:
+            pass
+    if out.get("server_cert_chain"):
+        try:
+            out["server_cert_chain"] = json.loads(out["server_cert_chain"])
+        except Exception:
+            pass
+    # client_hello_raw is a BLOB; hex-encode for JSON transport.
+    if out.get("client_hello_raw"):
+        out["client_hello_raw"] = bytes(out["client_hello_raw"]).hex()
+    return out
+
+
+def get_http2_stream_frames(connection_id: str, stream_id: int | None = None,
+                            limit: int = 500) -> list[dict]:
+    """Frame-level trace for one h2 connection, optionally filtered by stream."""
+    sql = ["SELECT * FROM h2_frames WHERE h2_conn_id=?"]
+    params: list = [connection_id]
+    if stream_id is not None:
+        sql.append("AND stream_id=?"); params.append(int(stream_id))
+    sql.append("ORDER BY seq ASC LIMIT ?"); params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(" ".join(sql), params).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d.pop("payload_json"))
+        except Exception:
+            d["payload"] = {}
+        out.append(d)
+    return out
+
+
+def get_ws_messages(entry_id: str, limit: int = 1000) -> list[dict]:
+    """WebSocket frames for the upgrade entry, in arrival order."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ws_messages WHERE entry_id=? ORDER BY seq ASC LIMIT ?",
+            (entry_id, limit),
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        if d.get("bin_payload") is not None:
+            d["bin_payload"] = bytes(d["bin_payload"]).hex()
+        out.append(d)
+    return out
+
+
+def get_sse_events(entry_id: str, limit: int = 1000) -> list[dict]:
+    """Parsed Server-Sent Events from a text/event-stream response."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sse_events WHERE entry_id=? ORDER BY seq ASC LIMIT ?",
+            (entry_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 if __name__ == "__main__":
     # Tiny CLI for debugging from inside the container.
-    import argparse, sys
+    import argparse
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     gp = sub.add_parser("get"); gp.add_argument("entry_id")
     sp = sub.add_parser("search"); sp.add_argument("q")
-    ep = sub.add_parser("endpoints")
+    sub.add_parser("endpoints")
+    sub.add_parser("sessions")
+    sub.add_parser("active")
+    tp = sub.add_parser("tls"); tp.add_argument("connection_id")
+    hp = sub.add_parser("h2"); hp.add_argument("connection_id"); hp.add_argument("--stream", type=int)
+    wp = sub.add_parser("ws"); wp.add_argument("entry_id")
     args = ap.parse_args()
 
     if args.cmd == "list":
@@ -170,3 +288,14 @@ if __name__ == "__main__":
     elif args.cmd == "endpoints":
         for row in extract_endpoints():
             print(f"{row['hits']:5}x  {row['method']:6} {row['remote_host']}  {row['example_url']}")
+    elif args.cmd == "sessions":
+        print(json.dumps(list_sessions(), indent=2, default=str))
+    elif args.cmd == "active":
+        print(json.dumps(active_session(), indent=2, default=str))
+    elif args.cmd == "tls":
+        print(json.dumps(get_tls_connection(args.connection_id), indent=2, default=str))
+    elif args.cmd == "h2":
+        print(json.dumps(get_http2_stream_frames(args.connection_id, args.stream),
+                         indent=2, default=str))
+    elif args.cmd == "ws":
+        print(json.dumps(get_ws_messages(args.entry_id), indent=2, default=str))

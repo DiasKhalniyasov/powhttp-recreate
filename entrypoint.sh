@@ -71,6 +71,23 @@ log "Starting mitmproxy on $PROXY_HOST:$PROXY_PORT"
 mkdir -p "$STATE_DIR/bodies"
 export POWHTTP_FLOWS_DB="$FLOWS_DB"
 export POWHTTP_BODIES_DIR="$STATE_DIR/bodies"
+export POWHTTP_PROXY_PORT="$PROXY_PORT"
+
+# Pre-mint the session ULID so the agent process can reference it via the same
+# env var the addon uses — lets session_id flow through to MCP tools / logs.
+if [ -z "${POWHTTP_SESSION_ID:-}" ]; then
+    export POWHTTP_SESSION_ID="$(python3 -c 'import sys, os; sys.path.insert(0, "/app"); from ids import new_ulid; print(new_ulid())')"
+fi
+log "Session ULID: $POWHTTP_SESSION_ID"
+
+# DoH upstream resolver — matches powhttp's 1.12.12.12 / 9.9.9.11 / 8.8.8.8
+# choice. Opt-in: set POWHTTP_DOH=on in the container env to enable.
+: "${POWHTTP_DOH:=off}"
+: "${POWHTTP_DOH_FALLBACK:=system}"
+export POWHTTP_DOH POWHTTP_DOH_FALLBACK
+if [ "${POWHTTP_DOH}" = "on" ]; then
+    log "DoH upstream resolver: ON (endpoints=${POWHTTP_DOH_ENDPOINT:-defaults})"
+fi
 
 # mitmdump = mitmproxy headless. --set flow_detail=0 keeps stderr quiet.
 mitmdump \

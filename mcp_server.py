@@ -252,6 +252,90 @@ def get_entry(
 
 
 @mcp.tool()
+def active_session() -> dict:
+    """Current capture session — ULID and ordered list of entry IDs.
+
+    Equivalent to powhttp's `/sessions/active`. Use this to get a handle on
+    the run in progress before drilling into specific entries.
+    """
+    s = flows.active_session()
+    return s or {"error": "no sessions recorded yet"}
+
+
+@mcp.tool()
+def list_sessions(limit: int = 50) -> dict:
+    """All recorded proxy-daemon runs, newest first."""
+    rows = flows.list_sessions(limit=limit)
+    return {"count": len(rows), "sessions": rows}
+
+
+@mcp.tool()
+def get_tls_connection(connection_id: str) -> dict:
+    """Full TLS handshake record — JA3/JA4, cipher, cert chain, client cert.
+
+    `connection_id` comes from an entry's `tls_conn_id` field (fetch it via
+    get_entry). Raw ClientHello bytes are returned hex-encoded.
+    """
+    row = flows.get_tls_connection(connection_id)
+    return row or {"error": f"tls connection not found: {connection_id}"}
+
+
+@mcp.tool()
+def get_http2_stream_frames(
+    connection_id: str,
+    stream_id: int | None = None,
+    limit: int = 500,
+) -> dict:
+    """HTTP/2 frame-level trace (DATA, HEADERS, WINDOW_UPDATE, RST_STREAM, …).
+
+    Equivalent to powhttp's `/http2/{conn}/streams/{sid}`. Omit `stream_id`
+    to see the full connection — useful for SETTINGS/PING/GOAWAY which live
+    on stream 0.
+
+    Args:
+        connection_id: h2_conn_id from a captured entry.
+        stream_id: optional — filter to a specific stream.
+        limit: max frames to return.
+    """
+    frames = flows.get_http2_stream_frames(connection_id, stream_id=stream_id, limit=limit)
+    return {
+        "connection_id": connection_id,
+        "stream_id": stream_id,
+        "count": len(frames),
+        "truncated": len(frames) == limit,
+        "frames": frames,
+    }
+
+
+@mcp.tool()
+def get_ws_messages(entry_id: str, limit: int = 1000) -> dict:
+    """WebSocket frames for an upgrade entry, in arrival order.
+
+    Binary payloads are hex-encoded. The direction field is 'from_client'
+    or 'from_server'.
+    """
+    msgs = flows.get_ws_messages(entry_id, limit=limit)
+    return {
+        "entry_id": entry_id,
+        "count": len(msgs),
+        "truncated": len(msgs) == limit,
+        "messages": msgs,
+    }
+
+
+@mcp.tool()
+def get_sse_events(entry_id: str, limit: int = 1000) -> dict:
+    """Parsed Server-Sent Events for a text/event-stream entry."""
+    events = flows.get_sse_events(entry_id, limit=limit)
+    return {
+        "entry_id": entry_id,
+        "count": len(events),
+        "truncated": len(events) == limit,
+        "events": events,
+    }
+
+
+@mcp.tool()
 def extract_endpoints(since_ms: int | None = None, mark_id: str | None = None) -> dict:
     """Cluster captured flows into endpoint groups.
 
